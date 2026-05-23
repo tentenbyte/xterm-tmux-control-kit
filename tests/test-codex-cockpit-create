@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+tmp_dir="$(mktemp -d)"
+session="codex-cockpit-create-test-$$"
+
+cleanup() {
+  tmux kill-session -t "${session}" 2>/dev/null || true
+  rm -rf "${tmp_dir}"
+}
+trap cleanup EXIT
+
+cat >"${tmp_dir}/fake-codex" <<'SH'
+#!/usr/bin/env bash
+sleep 60
+SH
+chmod +x "${tmp_dir}/fake-codex"
+
+tmux new-session -d -x 343 -y 30 -s "${session}" 'sleep 60'
+
+CODEX_BIN="${tmp_dir}/fake-codex" \
+TMUX_CODEX_COCKPIT_LAYOUT="${repo_dir}/bin/tmux-codex-cockpit-layout" \
+  "${repo_dir}/bin/tmux-new-codex-cockpit" -t "${session}" -n codex-test
+
+sleep 0.3
+
+actual="$(tmux list-panes -t "${session}:codex-test" -F '#{pane_index}:#{pane_width}:#{pane_current_command}' | paste -sd ' ' -)"
+expected="1:70:bash 2:100:bash 3:100:bash 4:70:bash"
+if [[ "${actual}" != "${expected}" ]]; then
+  printf 'expected: %s\nactual:   %s\n' "${expected}" "${actual}" >&2
+  exit 1
+fi
+
+if ! tmux show-hooks -w -t "${session}:codex-test" | grep -q 'tmux-codex-cockpit-layout'; then
+  printf 'window-resized hook was not installed\n' >&2
+  exit 1
+fi
+
+printf 'codex cockpit create tests passed\n'

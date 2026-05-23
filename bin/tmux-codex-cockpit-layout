@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 4 ]]; then
+  echo "usage: tmux-codex-cockpit-layout LEFT_PANE BASE_CODEX_PANE SECOND_CODEX_PANE RIGHT_PANE" >&2
+  exit 2
+fi
+
+left="$1"
+base="$2"
+mid2="$3"
+right="$4"
+
+for pane in "${left}" "${base}" "${mid2}" "${right}"; do
+  tmux display-message -p -t "${pane}" '#{pane_id}' >/dev/null 2>&1 || exit 0
+done
+
+window_width="$(tmux display-message -p -t "${base}" '#{window_width}')"
+usable_width=$((window_width - 3))
+if (( usable_width < 4 )); then
+  usable_width=4
+fi
+
+target_codex_width=100
+target_codex_total=$((target_codex_width * 2))
+
+if (( usable_width < target_codex_total + 2 )); then
+  left_width=1
+  right_width=1
+else
+  side_budget=$((usable_width - target_codex_total))
+  left_width=$((side_budget / 2))
+  right_width=$((side_budget - left_width))
+
+  if (( left_width < 1 )); then
+    left_width=1
+  fi
+  if (( right_width < 1 )); then
+    right_width=1
+  fi
+fi
+
+codex_total=$((usable_width - left_width - right_width))
+if (( codex_total < 2 )); then
+  codex_total=2
+fi
+
+if (( codex_total >= target_codex_total )); then
+  base_width="${target_codex_width}"
+  mid2_width="${target_codex_width}"
+else
+  base_width=$(((codex_total + 1) / 2))
+  mid2_width=$((codex_total - base_width))
+  if (( mid2_width < 1 )); then
+    mid2_width=1
+  fi
+fi
+
+tmux resize-pane -t "${left}" -x "${left_width}" 2>/dev/null || true
+tmux resize-pane -t "${right}" -x "${right_width}" 2>/dev/null || true
+tmux resize-pane -t "${base}" -x "${base_width}" 2>/dev/null || true
+tmux resize-pane -t "${mid2}" -x "${mid2_width}" 2>/dev/null || true

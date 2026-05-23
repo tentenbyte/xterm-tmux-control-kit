@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+helper="${1:-$repo_dir/bin/tmux-codex-cockpit-layout}"
+
+if ! command -v tmux >/dev/null 2>&1; then
+  printf 'tmux is required\n' >&2
+  exit 1
+fi
+
+session="codex-layout-test-$$"
+cleanup() {
+  tmux kill-session -t "${session}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+base="$(tmux new-session -d -x 343 -y 30 -s "${session}" -P -F '#{pane_id}' 'sleep 60')"
+right="$(tmux split-window -h -t "${base}" -P -F '#{pane_id}' 'sleep 60')"
+left="$(tmux split-window -h -b -t "${base}" -P -F '#{pane_id}' 'sleep 60')"
+mid2="$(tmux split-window -h -l 50% -t "${base}" -P -F '#{pane_id}' 'sleep 60')"
+
+assert_layout() {
+  local width="$1"
+  local expected="$2"
+  local actual
+
+  tmux resize-window -t "${session}:1" -x "${width}" -y 30
+  "${helper}" "${left}" "${base}" "${mid2}" "${right}"
+  actual="$(tmux list-panes -t "${session}:1" -F '#{pane_index}:#{pane_width}' | paste -sd ' ' -)"
+
+  if [[ "${actual}" != "${expected}" ]]; then
+    printf 'width=%s expected: %s\nwidth=%s actual:   %s\n' \
+      "${width}" "${expected}" "${width}" "${actual}" >&2
+    exit 1
+  fi
+}
+
+assert_layout 343 "1:70 2:100 3:100 4:70"
+assert_layout 260 "1:28 2:100 3:100 4:29"
+assert_layout 180 "1:1 2:88 3:87 4:1"
+
+printf 'codex cockpit layout tests passed\n'

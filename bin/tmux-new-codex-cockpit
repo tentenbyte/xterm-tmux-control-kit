@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+home_dir="${HOME}"
+codex_bin="${CODEX_BIN:-}"
+layout_bin="${TMUX_CODEX_COCKPIT_LAYOUT:-${HOME}/.local/bin/tmux-codex-cockpit-layout}"
+target_session=""
+window_name="cockpit"
+
+if [[ -z "${codex_bin}" ]]; then
+  if command -v codex >/dev/null 2>&1; then
+    codex_bin="$(command -v codex)"
+  elif [[ -x "${HOME}/.npm-global/bin/codex" ]]; then
+    codex_bin="${HOME}/.npm-global/bin/codex"
+  else
+    echo "tmux-new-codex-cockpit: codex not found; set CODEX_BIN=/path/to/codex" >&2
+    exit 127
+  fi
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|--target-session)
+      target_session="${2:?missing target session}"
+      shift 2
+      ;;
+    -n|--name)
+      window_name="${2:?missing window name}"
+      shift 2
+      ;;
+    *)
+      echo "usage: tmux-new-codex-cockpit [-t session] [-n window-name]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "${target_session}" ]]; then
+  if [[ -z "${TMUX:-}" ]]; then
+    echo "tmux-new-codex-cockpit needs -t when run outside tmux" >&2
+    exit 2
+  fi
+  target_session="$(tmux display-message -p '#S')"
+fi
+
+shell_command() {
+  local script="$1"
+  local quoted
+  printf -v quoted '%q' "${script}"
+  printf 'bash -lc %s' "${quoted}"
+}
+
+printf -v quoted_home '%q' "${home_dir}"
+printf -v quoted_codex '%q' "${codex_bin}"
+printf -v quoted_layout '%q' "${layout_bin}"
+
+codex_script="cd ${quoted_home} && exec ${quoted_codex} --search --yolo"
+
+left_status_script=$(cat <<STATUS
+cd ${quoted_home}
+printf '\\033[?25l'
+trap "printf '\\033[?25h'" EXIT
+while :; do
+  printf '\\033[H'
+  printf 'LEFT STATUS\\n\\n'
+  date '+%F %T'
+  printf '\\nSessions:\\n'
+  tmux list-sessions
+  printf '\\nWindows:\\n'
+  tmux list-windows
+  printf '\\033[J'
+  sleep 10
+done
+STATUS
+)
+
+win="$(
+  tmux new-window -d -P -F '#{window_id}' \
+    -t "${target_session}:" \
+    -n "${window_name}" \
+    -c "${home_dir}" \
+    "$(shell_command "${codex_script}")"
+)"
+
+base="$(tmux list-panes -t "${win}" -F '#{pane_id}')"
+
+right_status_script=$(cat <<STATUS
+cd ${quoted_home}
+target='${win}'
+printf '\\033[?25l'
+trap "printf '\\033[?25h'" EXIT
+while :; do
+  printf '\\033[H'
+  printf 'RIGHT STATUS\\n\\n'
+  date '+%F %T'
+  printf '\\nPanes:\\n'
+  tmux list-panes -t "\${target}" -F '#{pane_index} #{pane_width}x#{pane_height} #{pane_current_path} #{pane_current_command}'
+  printf '\\033[J'
+  sleep 10
+done
+STATUS
+)
+
+right="$(
+  tmux split-window -h -l 9% -P -F '#{pane_id}' \
+    -t "${base}" \
+    -c "${home_dir}" \
+    "$(shell_command "${right_status_script}")"
+)"
+
+left="$(
+  tmux split-window -h -b -l 9% -P -F '#{pane_id}' \
+    -t "${base}" \
+    -c "${home_dir}" \
+    "$(shell_command "${left_status_script}")"
+)"
+
+mid2="$(
+  tmux split-window -h -l 50% -P -F '#{pane_id}' \
+    -t "${base}" \
+    -c "${home_dir}" \
+    "$(shell_command "${codex_script}")"
+)"
+
+"${layout_bin}" "${left}" "${base}" "${mid2}" "${right}"
+tmux set-hook -w -t "${win}" window-resized \
+  "run-shell -b '${quoted_layout} ${left} ${base} ${mid2} ${right}'"
+tmux select-pane -t "${base}"
+tmux select-window -t "${win}"
