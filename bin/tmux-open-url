@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+raw="${1:-}"
+word="${2:-}"
+line="${3:-}"
+
+open_detached() {
+  local opener="$1"
+  local target="$2"
+
+  if [ -n "${TMUX_OPEN_URL_TEST_LOG:-}" ]; then
+    "$opener" "$target"
+  else
+    nohup "$opener" "$target" >/dev/null 2>&1 &
+  fi
+}
+
+open_in_chrome() {
+  local url="$1"
+  local chrome=""
+
+  for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+    if chrome="$(command -v "$candidate" 2>/dev/null)"; then
+      open_detached "$chrome" "$url"
+      return 0
+    fi
+  done
+
+  open_detached xdg-open "$url"
+}
+
+trim_target() {
+  local target="$1"
+
+  target="${target//$'\r'/}"
+  target="${target//$'\n'/}"
+  target="${target#<}"
+  target="${target%>}"
+  target="${target#\"}"
+  target="${target%\"}"
+  target="${target#\'}"
+  target="${target%\'}"
+
+  while [[ "$target" =~ [.,\;\:\!\?\)\]\}]$ ]]; do
+    target="${target%?}"
+  done
+
+  printf '%s\n' "$target"
+}
+
+file_uri_to_path() {
+  local uri="$1"
+  local path="${uri#file://}"
+
+  case "$path" in
+    localhost/*)
+      path="/${path#localhost/}"
+      ;;
+  esac
+
+  printf '%b\n' "${path//%/\\x}"
+}
+
+extract_http_url() {
+  local text="$1"
+  local url_re='https?://[^[:space:]<>"'\'']+'
+
+  if [[ "$text" =~ $url_re ]]; then
+    trim_target "${BASH_REMATCH[0]}"
+    return 0
+  fi
+
+  return 1
+}
+
+extract_file_uri() {
+  local text="$1"
+  local file_re='file://[^[:space:]<>"'\'']+'
+
+  if [[ "$text" =~ $file_re ]]; then
+    trim_target "${BASH_REMATCH[0]}"
+    return 0
+  fi
+
+  return 1
+}
+
+extract_existing_path() {
+  local text="$1"
+  local path_re='/[^[:space:]<>"'\'']+'
+  local candidate
+
+  while [[ "$text" =~ $path_re ]]; do
+    candidate="$(trim_target "${BASH_REMATCH[0]}")"
+    if [ -e "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    text="${text#*"${BASH_REMATCH[0]}"}"
+  done
+
+  return 1
+}
+
+target=""
+target_type=""
+for text in "$raw" "$word" "$line"; do
+  if target="$(extract_http_url "$text")"; then
+    target_type="web"
+    break
+  fi
+  if target="$(extract_file_uri "$text")"; then
+    target_type="file-uri"
+    break
+  fi
+  if target="$(extract_existing_path "$text")"; then
+    target_type="path"
+    break
+  fi
+done
+
+[ -n "$target" ] || exit 0
+
+case "$target_type:$target" in
+  web:http://*|web:https://*)
+    open_in_chrome "$target"
+    ;;
+  file-uri:file://*)
+    path="$(file_uri_to_path "$target")"
+    [ -e "$path" ] || exit 0
+    open_detached xdg-open "$path"
+    ;;
+  path:/*)
+    [ -e "$target" ] || exit 0
+    open_detached xdg-open "$target"
+    ;;
+  http://*|https://*)
+    open_in_chrome "$target"
+    ;;
+esac
+

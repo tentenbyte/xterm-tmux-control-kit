@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+import argparse
+import ast
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+
+
+DEFAULT_MONITOR_CMD = [
+    "dbus-monitor",
+    "type='method_call',interface='org.freedesktop.Notifications',member='Notify'",
+]
+
+
+def run(args, *, input_bytes=None, check=True):
+    return subprocess.run(args, input=input_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check)
+
+
+def log(path, message):
+    line = f"{datetime.now().isoformat(timespec='seconds')} {message}\n"
+    if path:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(line)
+    else:
+        sys.stderr.write(line)
+
+
+def unquote_dbus_string(line):
+    match = re.match(r'\s*string\s+(".*")\s*$', line)
+    if not match:
+        return None
+    try:
+        return ast.literal_eval(match.group(1))
+    except Exception:
+        return None
+
+
+def kdeconnect_text_notification(block):
+    if "interface=org.freedesktop.Notifications; member=Notify" not in block[0]:
+        return None
+
+    strings = []
+    for line in block[1:]:
+        value = unquote_dbus_string(line)
+        if value is not None:
+            strings.append(value)
+
+    if len(strings) < 4:
+        return None
+
+    app_name = strings[0]
+    app_icon = strings[1]
+    summary = strings[2]
+    body = strings[3]
+
+    app_matches = app_name == "KDE Connect" or app_icon == "kdeconnect"
+    text_share_matches = "Shared text from" in summary and "copied to clipboard" in summary
+    if app_matches and text_share_matches:
+        return body
+    return None
+
+
+def notification_blocks(stream):
+    block = []
+    for raw in stream:
+        line = raw.rstrip("\n")
+        if line.startswith(("method call ", "signal ", "error ", "method return ")):
+            if block:
+                yield block
+            block = [line]
+        elif block:
+            block.append(line)
+    if block:
+        yield block
+
+
+def read_clipboard():
+    for cmd in (["xclip", "-selection", "clipboard", "-o"], ["xsel", "--clipboard", "--output"]):
+        try:
+            result = run(cmd, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            continue
+        if result.stdout:
+            return result.stdout
+    return b""
+
+
+def active_window_info():
+    try:
+        root = run(["xprop", "-root", "_NET_ACTIVE_WINDOW"]).stdout.decode("utf-8", "replace")
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    match = re.search(r"#\s*(0x[0-9a-fA-F]+)", root)
+    if not match or match.group(1) == "0x0":
+        return None
+
+    window_id = match.group(1)
+    try:
+        props = run(["xprop", "-id", window_id, "WM_CLASS", "_NET_WM_PID"]).stdout.decode("utf-8", "replace")
+    except subprocess.CalledProcessError:
+        return None
+
+    class_match = re.search(r'WM_CLASS\(STRING\)\s*=\s*(.*)', props)
+    pid_match = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", props)
+    if not class_match or not pid_match:
+        return None
+
+    return {
+        "window_id": window_id,
+        "wm_class": class_match.group(1),
+        "pid": int(pid_match.group(1)),
+    }
+
+
+def process_has_ancestor(pid, ancestor):
+    seen = set()
+    current = pid
+    while current > 1 and current not in seen:
+        seen.add(current)
+        if current == ancestor:
+            return True
+        try:
+            ppid_text = run(["ps", "-o", "ppid=", "-p", str(current)]).stdout.decode().strip()
+        except subprocess.CalledProcessError:
+            return False
+        if not ppid_text:
+            return False
+        current = int(ppid_text)
+    return False
+
+
+def active_xterm_tmux_pane():
+    info = active_window_info()
+    if not info:
+        return None, "active window unavailable"
+
+    if '"xterm"' not in info["wm_class"].lower():
+        return None, "active window is not xterm"
+
+    try:
+        clients = run(["tmux", "list-clients", "-F", "#{client_pid}\t#{client_tty}"]).stdout.decode("utf-8", "replace")
+    except subprocess.CalledProcessError:
+        return None, "tmux list-clients failed"
+
+    for line in clients.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        client_pid = int(parts[0])
+        client_tty = parts[1]
+        if not process_has_ancestor(client_pid, info["pid"]):
+            continue
+
+        try:
+            pane = run(["tmux", "display-message", "-c", client_tty, "-p", "#{pane_id}"]).stdout.decode().strip()
+        except subprocess.CalledProcessError:
+            return None, f"could not resolve pane for {client_tty}"
+        if pane:
+            return pane, None
+
+    return None, "no tmux client belongs to active xterm"
+
+
+def paste_bytes_to_tmux(data, pane):
+    if not data:
+        return False
+
+    with tempfile.NamedTemporaryFile() as tmp:
+        tmp.write(data)
+        tmp.flush()
+        with open(tmp.name, "rb") as handle:
+            run(["tmux", "load-buffer", "-"], input_bytes=handle.read())
+    run(["tmux", "paste-buffer", "-p", "-t", pane])
+    return True
+
+
+def handle_kdeconnect_text(body, log_path):
+    pane, reason = active_xterm_tmux_pane()
+    if not pane:
+        log(log_path, f"skip: {reason}")
+        return False
+
+    data = read_clipboard()
+    if not data and body:
+        data = body.encode("utf-8")
+    if not data:
+        log(log_path, "skip: clipboard is empty")
+        return False
+
+    paste_bytes_to_tmux(data, pane)
+    log(log_path, f"paste: KDE Connect text to {pane}")
+    return True
+
+
+def watch(args):
+    monitor_cmd = args.monitor_cmd or " ".join(DEFAULT_MONITOR_CMD)
+    proc = subprocess.Popen(
+        monitor_cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    try:
+        assert proc.stdout is not None
+        for block in notification_blocks(proc.stdout):
+            body = kdeconnect_text_notification(block)
+            if body is None:
+                continue
+            handle_kdeconnect_text(body, args.log)
+            if args.once:
+                return 0
+    finally:
+        if args.once and proc.poll() is None:
+            proc.terminate()
+    return proc.wait()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Paste KDE Connect shared text into the active xterm tmux pane.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    watch_parser = sub.add_parser("watch")
+    watch_parser.add_argument("--once", action="store_true", help="Exit after the first KDE Connect text notification.")
+    watch_parser.add_argument("--monitor-cmd", help="Command that prints dbus-monitor-style notification events.")
+    watch_parser.add_argument("--log", default=os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "kc-kdeconnect-tmux-bridge.log"))
+
+    args = parser.parse_args()
+    if args.command == "watch":
+        return watch(args)
+    return 64
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: kc-tmux-paste [--print] [-t TARGET_PANE]
+
+Read the X11 clipboard with xclip or xsel, then paste it into tmux as one
+buffer. This is intended for KDE Connect shared text copied to the desktop
+clipboard.
+
+Options:
+  --print          Print clipboard text instead of pasting into tmux.
+  -t TARGET_PANE   Pass a tmux target pane, for example %5 or :1.1.
+  -h, --help       Show this help.
+EOF
+}
+
+print_only=0
+target=()
+
+while (($#)); do
+  case "$1" in
+    --print)
+      print_only=1
+      shift
+      ;;
+    -t)
+      [[ $# -ge 2 ]] || {
+        printf 'kc-tmux-paste: -t requires a target pane\n' >&2
+        exit 64
+      }
+      target=(-t "$2")
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'kc-tmux-paste: unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+clip_file=$(mktemp)
+trap 'rm -f "$clip_file"' EXIT
+
+read_clipboard() {
+  if command -v xclip >/dev/null 2>&1; then
+    if xclip -selection clipboard -o >"$clip_file" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  if command -v xsel >/dev/null 2>&1; then
+    if xsel --clipboard --output >"$clip_file" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  printf 'kc-tmux-paste: could not read clipboard with xclip or xsel\n' >&2
+  exit 69
+}
+
+read_clipboard
+
+if [[ ! -s "$clip_file" ]]; then
+  printf 'kc-tmux-paste: clipboard is empty\n' >&2
+  exit 65
+fi
+
+if ((print_only)); then
+  cat "$clip_file"
+  exit 0
+fi
+
+tmux load-buffer - <"$clip_file"
+tmux paste-buffer -p "${target[@]}"
+

@@ -1,0 +1,14 @@
+[Unit]
+Description=Paste KDE Connect shared text into active xterm tmux pane
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@HOME@/.local/bin/kc-kdeconnect-tmux-bridge watch
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+

@@ -1,0 +1,6 @@
+*.bak.*
+__pycache__/
+*.pyc
+PROJECT.md
+current.md
+capability.yaml

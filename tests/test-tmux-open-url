@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+helper="${1:-$repo_dir/bin/tmux-open-url}"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+log="$tmp/open.log"
+target_file="$tmp/sample.txt"
+touch "$target_file"
+
+cat >"$tmp/google-chrome" <<'SH'
+#!/usr/bin/env bash
+printf 'chrome\t%s\n' "$1" >>"$TMUX_OPEN_URL_TEST_LOG"
+SH
+chmod +x "$tmp/google-chrome"
+
+cat >"$tmp/xdg-open" <<'SH'
+#!/usr/bin/env bash
+printf 'xdg-open\t%s\n' "$1" >>"$TMUX_OPEN_URL_TEST_LOG"
+SH
+chmod +x "$tmp/xdg-open"
+
+run_case() {
+  : >"$log"
+  PATH="$tmp:$PATH" TMUX_OPEN_URL_TEST_LOG="$log" "$helper" "$@"
+  for _ in 1 2 3 4 5; do
+    [ -s "$log" ] && break
+    sleep 0.05
+  done
+}
+
+assert_log() {
+  local expected="$1"
+  local actual
+  actual="$(cat "$log" 2>/dev/null || true)"
+  if [ "$actual" != "$expected" ]; then
+    printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
+    return 1
+  fi
+}
+
+run_case "" "" "open https://www.youtube.com/ now"
+assert_log $'chrome\thttps://www.youtube.com/'
+
+run_case "" "" "open file://$target_file"
+assert_log $'xdg-open\t'"$target_file"
+
+run_case "" "" "open $target_file"
+assert_log $'xdg-open\t'"$target_file"
+
+run_case "" "" "not a target"
+assert_log ""
+
+printf 'tmux-open-url tests passed\n'
+

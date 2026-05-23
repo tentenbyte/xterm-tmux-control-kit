@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+browser_command() {
+  if [[ -n "${OPEN_SELECTED_URL_BROWSER:-}" ]]; then
+    printf '%s\n' "$OPEN_SELECTED_URL_BROWSER"
+    return 0
+  fi
+
+  for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' xdg-open
+}
+
+read_selection() {
+  if [[ "$#" -gt 0 ]]; then
+    printf '%s\n' "$*"
+    return 0
+  fi
+
+  if ! [[ -t 0 ]]; then
+    local stdin_text
+    stdin_text=$(cat || true)
+    if [[ -n "$stdin_text" ]]; then
+      printf '%s\n' "$stdin_text"
+      return 0
+    fi
+  fi
+
+  if command -v xclip >/dev/null 2>&1; then
+    xclip -o -selection primary 2>/dev/null && return 0
+    xclip -o -selection clipboard 2>/dev/null && return 0
+  fi
+
+  if command -v xsel >/dev/null 2>&1; then
+    xsel -op 2>/dev/null && return 0
+    xsel -ob 2>/dev/null && return 0
+  fi
+
+  return 1
+}
+
+extract_url() {
+  perl -0777 -ne '
+    my $text = $_;
+    $text =~ s/\s+/ /g;
+
+    my @patterns = (
+      qr{\b(?:https?|file)://[^\s<>"'"'"'`]+}i,
+      qr{\blocalhost(?::[0-9]+)?(?:/[^\s<>"'"'"'`]*)?}i,
+      qr{\b(?:127\.0\.0\.1|0\.0\.0\.0)(?::[0-9]+)?(?:/[^\s<>"'"'"'`]*)?}i,
+      qr{\bwww\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s<>"'"'"'`]*)?}i,
+    );
+
+    for my $pattern (@patterns) {
+      next unless $text =~ /($pattern)/;
+      my $url = $1;
+      $url =~ s/[)\]}>.,;:!?]+$//;
+      $url = "http://$url" if $url =~ /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::|\/|$)/i;
+      $url = "https://$url" if $url =~ /^www\./i;
+      print "$url\n";
+      exit 0;
+    }
+
+    exit 1;
+  '
+}
+
+selection=$(read_selection "$@" || true)
+url=$(printf '%s' "$selection" | extract_url || true)
+
+if [[ -z "${url:-}" ]]; then
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "No URL selected" "Select a URL in xterm, then right-click."
+  fi
+  exit 2
+fi
+
+if [[ "${OPEN_SELECTED_URL_PRINT:-}" == "1" ]]; then
+  printf '%s\n' "$url"
+  exit 0
+fi
+
+setsid "$(browser_command)" "$url" >/dev/null 2>&1 &

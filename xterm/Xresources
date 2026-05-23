@@ -1,0 +1,15 @@
+! XTerm font settings
+XTerm*renderFont: true
+XTerm*faceName: Monospace
+XTerm*faceSize: 13
+
+! Send Alt/Meta as an ESC prefix so tmux can recognize M-1, M-2, etc.
+XTerm*metaSendsEscape: true
+XTerm*eightBitInput: false
+
+! Right-click opens the URL currently selected in xterm.
+! Middle-click keeps the default PRIMARY paste behavior.
+XTerm*VT100*translations: #override \n\
+    ~Ctrl ~Meta <Btn3Down>: ignore() \n\
+    ~Ctrl ~Meta <Btn3Up>: exec-formatted("@HOME@/.local/bin/open-selected-url", SELECT)
+
