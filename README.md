@@ -5,6 +5,7 @@ Small X11/xterm + tmux configuration kit for a keyboard-light, mouse-useful term
 It keeps tmux mouse scrolling enabled while making right-click useful:
 
 - outside tmux, xterm right-click opens the selected URL in Chrome;
+- F11 toggles xterm fullscreen;
 - inside tmux, right-click opens the URL or local file path under the pointer;
 - web URLs open in Chrome;
 - local files and directories open through `xdg-open`, so images, audio, video, PDFs, PPT, Excel files, and folders use the system default app;
@@ -77,6 +78,7 @@ tmux-open-url tests passed
 
 In xterm outside tmux:
 
+- press F11 to toggle xterm fullscreen;
 - select a URL with left mouse;
 - right-click to open it in Chrome;
 - middle-click keeps PRIMARY paste behavior.
@@ -87,4 +89,3 @@ Inside tmux:
 - right-click on `https://example.com` opens Chrome;
 - right-click on `file:///home/user/file.pdf` opens the local file;
 - right-click on `/home/user/file.pdf` opens the local file through the default application.
-

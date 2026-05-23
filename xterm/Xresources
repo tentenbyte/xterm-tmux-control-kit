@@ -8,8 +8,9 @@ XTerm*metaSendsEscape: true
 XTerm*eightBitInput: false
 
 ! Right-click opens the URL currently selected in xterm.
+! F11 toggles xterm fullscreen.
 ! Middle-click keeps the default PRIMARY paste behavior.
 XTerm*VT100*translations: #override \n\
+    <Key>F11: fullscreen() \n\
     ~Ctrl ~Meta <Btn3Down>: ignore() \n\
     ~Ctrl ~Meta <Btn3Up>: exec-formatted("@HOME@/.local/bin/open-selected-url", SELECT)
-
